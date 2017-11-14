@@ -2,18 +2,18 @@ package database
 
 import (
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq"
+	_ "github.com/lib/pq" // Postgres package
 	"github.com/spf13/viper"
 
 	"github.com/wtg/shuttletracker/model"
 )
 
-// MongoDB implements Database with—you guessed it—MongoDB.
+// Postgres implements Database with—you guessed it—Postgres.
 type Postgres struct {
 	db *sqlx.DB
 }
 
-// MongoDBConfig contains information on how to connect to a MongoDB server.
+// PostgresConfig contains information on how to connect to a Postgres server.
 type PostgresConfig struct {
 	PostgresURL string
 }
