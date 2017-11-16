@@ -102,6 +102,7 @@ func (api *API) RoutesCreateHandler(w http.ResponseWriter, r *http.Request) {
 	err = api.db.CreateRoute(&route)
 	// Error handling
 	if err != nil {
+		log.WithError(err).Error("Unable to create route.")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 
@@ -118,6 +119,7 @@ func (api *API) RoutesDeleteHandler(w http.ResponseWriter, r *http.Request) {
 	err := api.db.DeleteRoute(vars["id"])
 	// Error handling
 	if err != nil {
+		log.WithError(err).Error("Unable to delete route.")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
