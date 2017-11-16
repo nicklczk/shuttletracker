@@ -124,7 +124,11 @@ func (api *API) AdminHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	} else {
 		valid := false
-		users, _ := api.db.GetUsers()
+		users, err := api.db.GetUsers()
+		if err != nil {
+			log.WithError(err).Error("Unable to get users")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 		for _, u := range users {
 			if u.Name == strings.ToLower(cas.Username(r)) {
 				valid = true
@@ -135,9 +139,9 @@ func (api *API) AdminHandler(w http.ResponseWriter, r *http.Request) {
 			fmt.Printf("not authenticating")
 		}
 		if valid {
-			http.Redirect(w, r, "/admin/success/", 301)
+			http.Redirect(w, r, "/admin/success/", 302)
 		} else {
-			http.Redirect(w, r, "/admin/logout/", 301)
+			http.Redirect(w, r, "/admin/logout/", 302)
 		}
 	}
 
