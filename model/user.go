@@ -2,5 +2,6 @@ package model
 
 // User represents a user.
 type User struct {
-	Name string
+	ID   int
+	Name string `db:"rcs_id"`
 }

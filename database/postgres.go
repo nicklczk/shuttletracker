@@ -1,6 +1,8 @@
 package database
 
 import (
+	"time"
+
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // Postgres package
 	"github.com/spf13/viper"
@@ -37,7 +39,7 @@ func NewPostgres(cfg PostgresConfig) (*Postgres, error) {
         name text,
         description text,
         enabled boolean NOT NULL,
-        color character varying(6),
+        color text,
         created timestamp with time zone NOT NULL DEFAULT current_timestamp,
         updated timestamp with time zone NOT NULL DEFAULT current_timestamp
     );
@@ -49,7 +51,7 @@ func NewPostgres(cfg PostgresConfig) (*Postgres, error) {
         created timestamp with time zone NOT NULL DEFAULT current_timestamp,
         updated timestamp with time zone NOT NULL DEFAULT current_timestamp
     );
-    CREATE INDEX vehicles_enabled_idx ON vehicles (enabled);
+    CREATE INDEX IF NOT EXISTS vehicles_enabled_idx ON vehicles (enabled);
 
     CREATE TABLE IF NOT EXISTS updates (
         id serial PRIMARY KEY,
@@ -62,8 +64,13 @@ func NewPostgres(cfg PostgresConfig) (*Postgres, error) {
         status text NOT NULL,
         created timestamp with time zone NOT NULL DEFAULT current_timestamp
     );
-    CREATE INDEX updates_created_idx ON updates (created);
-    CREATE INDEX updates_vehicle_id_created_idx ON updates (vehicle_id, created);
+    CREATE INDEX IF NOT EXISTS updates_created_idx ON updates (created);
+    CREATE INDEX IF NOT EXISTS updates_vehicle_id_created_idx ON updates (vehicle_id, created);
+
+    CREATE TABLE IF NOT EXISTS users (
+        id serial PRIMARY KEY,
+        rcs_id text
+    );
     `
 	_, err = db.Exec(schema)
 
@@ -73,7 +80,7 @@ func NewPostgres(cfg PostgresConfig) (*Postgres, error) {
 // NewPostgresConfig creates a PostgresConfig from a Viper instance.
 func NewPostgresConfig(v *viper.Viper) *PostgresConfig {
 	cfg := &PostgresConfig{
-		PostgresURL: "127.0.0.1:5432",
+		PostgresURL: "postgres://postgres@127.0.0.1:5432?sslmode=disable",
 	}
 	v.SetDefault("database.postgresurl", cfg.PostgresURL)
 	return cfg
@@ -81,137 +88,148 @@ func NewPostgresConfig(v *viper.Viper) *PostgresConfig {
 
 // CreateRoute creates a Route.
 func (pg *Postgres) CreateRoute(route *model.Route) error {
-	query := `INSERT INTO routes VALUES
-        (name, description, enabled, color)
-        (:name, :description, :enabled, :color)
-        RETURNING (id, created, updated);`
-	rows, err := pg.db.NamedQuery(query, route)
+	stmt, err := pg.db.PrepareNamed(`
+        INSERT INTO routes (name, description, enabled, color)
+        VALUES (:name, :description, :enabled, :color)
+        RETURNING id, created, updated;`)
 	if err != nil {
 		return err
 	}
-	for rows.Next() {
-		return rows.StructScan(route)
-	}
-	return nil
+	err = stmt.Get(route, route)
+	return err
 }
 
-/*
 // DeleteRoute deletes a Route by its ID.
-func (m *MongoDB) DeleteRoute(routeID string) error {
-	return m.routes.Remove(bson.M{"id": routeID})
+func (pg *Postgres) DeleteRoute(routeID string) error {
+	_, err := pg.db.Exec(`DELETE FROM routes WHERE id = $1;`, routeID)
+	return err
 }
 
 // GetRoute returns a Route by its ID.
-func (m *MongoDB) GetRoute(routeID string) (model.Route, error) {
+func (pg *Postgres) GetRoute(routeID string) (model.Route, error) {
+	stmt, err := pg.db.Preparex(`SELECT * FROM routes WHERE id = $1;`)
+	if err != nil {
+		return model.Route{}, err
+	}
 	var route model.Route
-	err := m.routes.Find(bson.M{"id": routeID}).One(&route)
+	err = stmt.Get(&route, routeID)
 	return route, err
 }
 
 // GetRoutes returns all Routes.
-func (m *MongoDB) GetRoutes() ([]model.Route, error) {
-	var routes []model.Route
-	err := m.routes.Find(bson.M{}).All(&routes)
+func (pg *Postgres) GetRoutes() ([]model.Route, error) {
+	routes := []model.Route{}
+	query := `SELECT * FROM routes;`
+	err := pg.db.Select(&routes, query)
 	return routes, err
 }
 
 // ModifyRoute updates an existing Route by its ID.
-func (m *MongoDB) ModifyRoute(route *model.Route) error {
-	return m.routes.Update(bson.M{"id": route.ID}, route)
+func (pg *Postgres) ModifyRoute(route *model.Route) error {
+	stmt, err := pg.db.PrepareNamed(`
+        UPDATE routes SET (name, description, enabled, color)
+        = (:name, :description, :enabled, :color)
+        WHERE id = :id
+        RETURNING updated;`)
+	if err != nil {
+		return err
+	}
+	err = stmt.Get(route, route)
+	return err
 }
 
 // CreateStop creates a Stop.
-func (m *MongoDB) CreateStop(stop *model.Stop) error {
-	return m.stops.Insert(&stop)
+func (pg *Postgres) CreateStop(stop *model.Stop) error {
+	return nil
 }
 
 // DeleteStop deletes a Stop by its ID.
-func (m *MongoDB) DeleteStop(stopID string) error {
-	return m.stops.Remove(bson.M{"id": stopID})
+func (pg *Postgres) DeleteStop(stopID string) error {
+	return nil
 }
 
 // GetStop returns a Stop by its ID.
-func (m *MongoDB) GetStop(stopID string) (model.Stop, error) {
+func (pg *Postgres) GetStop(stopID string) (model.Stop, error) {
 	var stop model.Stop
-	err := m.stops.Find(bson.M{"id": stopID}).One(&stop)
-	return stop, err
+	return stop, nil
 }
 
 // GetStops returns all Stops.
-func (m *MongoDB) GetStops() ([]model.Stop, error) {
+func (pg *Postgres) GetStops() ([]model.Stop, error) {
 	var stops []model.Stop
-	err := m.stops.Find(bson.M{}).All(&stops)
-	return stops, err
+	return stops, nil
 }
 
 // CreateUpdate creates an Update.
-func (m *MongoDB) CreateUpdate(update *model.VehicleUpdate) error {
-	return m.updates.Insert(&update)
+func (pg *Postgres) CreateUpdate(update *model.VehicleUpdate) error {
+	return nil
 }
 
 // DeleteUpdatesBefore deletes all Updates that were created before a time.
-func (m *MongoDB) DeleteUpdatesBefore(before time.Time) (int, error) {
-	info, err := m.updates.RemoveAll(bson.M{"created": bson.M{"$lt": before}})
-	if err != nil {
-		return 0, err
-	}
-	return info.Removed, nil
+func (pg *Postgres) DeleteUpdatesBefore(before time.Time) (int, error) {
+	return 0, nil
 }
 
 // GetLastUpdateForVehicle returns the latest Update for a vehicle by its ID.
-func (m *MongoDB) GetLastUpdateForVehicle(vehicleID string) (model.VehicleUpdate, error) {
+func (pg *Postgres) GetLastUpdateForVehicle(vehicleID string) (model.VehicleUpdate, error) {
 	var update model.VehicleUpdate
-	err := m.updates.Find(bson.M{"vehicleID": vehicleID}).Sort("-created").One(&update)
-	return update, err
+	return update, nil
 }
 
 // GetUpdatesForVehicleSince returns all updates since a time for a vehicle by its ID.
-func (m *MongoDB) GetUpdatesForVehicleSince(vehicleID string, since time.Time) ([]model.VehicleUpdate, error) {
+func (pg *Postgres) GetUpdatesForVehicleSince(vehicleID string, since time.Time) ([]model.VehicleUpdate, error) {
 	var updates []model.VehicleUpdate
-	err := m.updates.Find(bson.M{"vehicleID": vehicleID, "created": bson.M{"$gt": since}}).Sort("-created").All(&updates)
-	return updates, err
+	return updates, nil
 }
 
 // GetUsers returns all Users.
-func (m *MongoDB) GetUsers() ([]model.User, error) {
-	var users []model.User
-	err := m.users.Find(bson.M{}).All(&users)
+func (pg *Postgres) GetUsers() ([]model.User, error) {
+	users := []model.User{}
+	query := `SELECT * FROM users;`
+	rows, err := pg.db.Queryx(query)
+	if err != nil {
+		return users, err
+	}
+	for rows.Next() {
+		var user model.User
+		err = rows.StructScan(&user)
+		if err != nil {
+			return users, err
+		}
+		users = append(users, user)
+	}
 	return users, err
 }
 
 // CreateVehicle creates a Vehicle.
-func (m *MongoDB) CreateVehicle(vehicle *model.Vehicle) error {
-	return m.vehicles.Insert(&vehicle)
+func (pg *Postgres) CreateVehicle(vehicle *model.Vehicle) error {
+	return nil
 }
 
 // DeleteVehicle deletes a Vehicle by its ID.
-func (m *MongoDB) DeleteVehicle(vehicleID string) error {
-	return m.vehicles.Remove(bson.M{"vehicleID": vehicleID})
+func (pg *Postgres) DeleteVehicle(vehicleID string) error {
+	return nil
 }
 
 // GetVehicle returns a Vehicle by its ID.
-func (m *MongoDB) GetVehicle(vehicleID string) (model.Vehicle, error) {
+func (pg *Postgres) GetVehicle(vehicleID string) (model.Vehicle, error) {
 	var vehicle model.Vehicle
-	err := m.vehicles.Find(bson.M{"vehicleID": vehicleID}).One(&vehicle)
-	return vehicle, err
+	return vehicle, nil
 }
 
 // GetVehicles returns all Vehicles.
-func (m *MongoDB) GetVehicles() ([]model.Vehicle, error) {
+func (pg *Postgres) GetVehicles() ([]model.Vehicle, error) {
 	var vehicles []model.Vehicle
-	err := m.vehicles.Find(bson.M{}).All(&vehicles)
-	return vehicles, err
+	return vehicles, nil
 }
 
 // GetEnabledVehicles returns all Vehicles that are enabled.
-func (m *MongoDB) GetEnabledVehicles() ([]model.Vehicle, error) {
+func (pg *Postgres) GetEnabledVehicles() ([]model.Vehicle, error) {
 	var vehicles []model.Vehicle
-	err := m.vehicles.Find(bson.M{"enabled": true}).All(&vehicles)
-	return vehicles, err
+	return vehicles, nil
 }
 
 // ModifyVehicle updates a Vehicle by its ID.
-func (m *MongoDB) ModifyVehicle(vehicle *model.Vehicle) error {
-	return m.vehicles.Update(bson.M{"vehicleID": vehicle.VehicleID}, vehicle)
+func (pg *Postgres) ModifyVehicle(vehicle *model.Vehicle) error {
+	return nil
 }
-*/
