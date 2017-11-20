@@ -1,5 +1,6 @@
 package api
 
+/*
 // Arrival Time serving what's the time to next N stops for one shuttle
 import (
 	"fmt"
@@ -67,3 +68,4 @@ func GetArrivalTime(update *model.VehicleUpdate, routes *mgo.Collection, stops *
 	}
 	return "N/A"
 }
+*/

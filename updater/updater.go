@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/spf13/viper"
-	mgo "gopkg.in/mgo.v2"
 
 	"github.com/wtg/shuttletracker/database"
 	"github.com/wtg/shuttletracker/log"
@@ -114,6 +113,22 @@ func (u *Updater) update() {
 				result[u.dataRegexp.SubexpNames()[i]] = item
 			}
 
+			// See if this iTrak ID is known
+			vehicleIDStr := strings.Replace(result["id"], "Vehicle ID:", "", -1)
+			vehicleID, err := strconv.Atoi(vehicleIDStr)
+			if err != nil {
+				log.WithError(err).Error("Unable to parse vehicle ID to int from string.")
+				return
+			}
+			vehicle, err := u.db.GetVehicleByITrakID(vehicleID)
+			if err == database.ErrVehicleNotFound {
+				log.Warnf("Unknown iTrak vehicle ID \"%d\". Make sure all vehicles have been added.", vehicleID)
+				return
+			} else if err != nil {
+				log.WithError(err).Error("Unable to fetch vehicle.")
+				return
+			}
+
 			// Create new vehicle update & insert update into database
 
 			// convert KPH to MPH
@@ -127,31 +142,30 @@ func (u *Updater) update() {
 
 			route := model.Route{}
 
-			vehicleID := strings.Replace(result["id"], "Vehicle ID:", "", -1)
-			vehicle, err := u.db.GetVehicle(vehicleID)
-			if err == mgo.ErrNotFound {
-				log.Warnf("Unknown vehicle ID \"%s\" returned by iTrak. Make sure all vehicles have been added.", vehicleID)
+			// determine if this is a new update from iTrak by comparing timestamps
+			gotLastUpdate := false
+			lastUpdate, err := u.db.GetLastUpdateForVehicle(vehicle.ID)
+			if err != nil && err != database.ErrUpdateNotFound {
+				log.WithError(err).Error("Unable to retrieve last update.")
 				return
-			} else if err != nil {
-				log.WithError(err).Error("Unable to fetch vehicle.")
+			} else if err == nil {
+				gotLastUpdate = true
+			}
+
+			// turn separate time and date strings into time.Time
+			itrakTime := strings.Replace(result["time"], "time:", "", -1)
+			itrakDate := strings.Replace(result["date"], "date:", "", -1)
+			timestamp, err := generateTimestamp(itrakTime, itrakDate)
+			if err != nil {
+				log.WithError(err).Error("Unable to generate update timestamp.")
 				return
 			}
 
-			// determine if this is a new update from itrak by comparing timestamps
-			lastUpdate, err := u.db.GetLastUpdateForVehicle(vehicle.VehicleID)
-			if err != nil && err != mgo.ErrNotFound {
-				log.WithError(err).Error("Unable to retrieve last update.")
+			if gotLastUpdate && (lastUpdate.Timestamp == timestamp) {
+				// Timestamp is not new; don't store update.
 				return
 			}
-			itrakTime := strings.Replace(result["time"], "time:", "", -1)
-			itrakDate := strings.Replace(result["date"], "date:", "", -1)
-			if err == nil {
-				if lastUpdate.Time == itrakTime && lastUpdate.Date == itrakDate {
-					// Timestamp is not new; don't store update.
-					return
-				}
-			}
-			log.Debugf("Updating %s.", vehicle.VehicleName)
+			log.Debugf("Updating %s.", vehicle.Name)
 
 			// vehicle found and no error
 			route, err = u.GuessRouteForVehicle(&vehicle)
@@ -160,16 +174,23 @@ func (u *Updater) update() {
 				return
 			}
 
-			update := model.VehicleUpdate{
-				VehicleID: strings.Replace(result["id"], "Vehicle ID:", "", -1),
-				Lat:       strings.Replace(result["lat"], "lat:", "", -1),
-				Lng:       strings.Replace(result["lng"], "lon:", "", -1),
+			latitude, err := strconv.ParseFloat(strings.Replace(result["lat"], "lat:", "", -1), 64)
+			if err != nil {
+				log.Error(err)
+			}
+			longitude, err := strconv.ParseFloat(strings.Replace(result["lng"], "lon:", "", -1), 64)
+			if err != nil {
+				log.Error(err)
+			}
+
+			update := model.Update{
+				VehicleID: vehicle.ID,
+				Latitude:  latitude,
+				Longitude: longitude,
 				Heading:   strings.Replace(result["heading"], "dir:", "", -1),
 				Speed:     speedMPHString,
 				Lock:      strings.Replace(result["lock"], "lck:", "", -1),
-				Time:      itrakTime,
-				Date:      itrakDate,
-				Status:    strings.Replace(result["status"], "trig:", "", -1),
+				Timestamp: timestamp,
 				Created:   time.Now(),
 				Route:     route.ID,
 			}
@@ -193,6 +214,44 @@ func (u *Updater) update() {
 	}
 }
 
+// generateTimestamp takes iTrak time and date strings and returns a time.Time representing them.
+// I'm not sure if this will work in January (does iTrak return "1" or "01" for January?)
+func generateTimestamp(itrakTime string, itrakDate string) (time.Time, error) {
+	day, err := strconv.Atoi(itrakDate[2:4])
+	if err != nil {
+		return time.Time{}, err
+	}
+	year, err := strconv.Atoi(itrakDate[4:8])
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	// we need to convert int to month
+	monthNum, err := strconv.Atoi(itrakDate[0:2])
+	if err != nil {
+		return time.Time{}, err
+	}
+	var monthTime time.Time
+	monthTime = monthTime.AddDate(0, monthNum-1, 0)
+	month := monthTime.Month()
+
+	hour, err := strconv.Atoi(itrakTime[0 : len(itrakTime)-4])
+	if err != nil {
+		return time.Time{}, err
+	}
+	minute, err := strconv.Atoi(itrakTime[len(itrakTime)-4 : len(itrakTime)-2])
+	if err != nil {
+		return time.Time{}, err
+	}
+	second, err := strconv.Atoi(itrakTime[len(itrakTime)-2 : len(itrakTime)])
+	if err != nil {
+		return time.Time{}, err
+	}
+
+	timestamp := time.Date(year, month, day, hour, minute, second, 0, time.UTC)
+	return timestamp, nil
+}
+
 // Convert kmh to mph
 func kphToMPH(kmh float64) float64 {
 	return kmh * 0.621371192
@@ -211,22 +270,16 @@ func (u *Updater) GuessRouteForVehicle(vehicle *model.Vehicle) (route model.Rout
 		routeDistances[route.ID] = 0
 	}
 
-	updates, err := u.db.GetUpdatesForVehicleSince(vehicle.VehicleID, time.Now().Add(time.Minute*-15))
+	updates, err := u.db.GetUpdatesForVehicleSince(vehicle.ID, time.Now().Add(time.Minute*-15))
 	if len(updates) < 5 {
-		// Can't make a guess with fewer than 5 updates.
-		log.Debugf("%v has too few recent updates (%d) to guess route.", vehicle.VehicleName, len(updates))
+		// Don't make a guess with fewer than 5 updates.
+		log.Debugf("%v has too few recent updates (%d) to guess route.", vehicle.Name, len(updates))
 		return
 	}
 
 	for _, update := range updates {
-		updateLatitude, err := strconv.ParseFloat(update.Lat, 64)
-		if err != nil {
-			log.Error(err)
-		}
-		updateLongitude, err := strconv.ParseFloat(update.Lng, 64)
-		if err != nil {
-			log.Error(err)
-		}
+		updateLatitude := update.Latitude
+		updateLongitude := update.Longitude
 
 		for _, route := range routes {
 			if !route.Enabled {
@@ -265,7 +318,7 @@ func (u *Updater) GuessRouteForVehicle(vehicle *model.Vehicle) (route model.Rout
 
 	// not on a route
 	if minRouteID == "" {
-		log.Debugf("%v not on route; distance from nearest: %v", vehicle.VehicleName, minDistance)
+		log.Debugf("%v not on route; distance from nearest: %v", vehicle.Name, minDistance)
 		return model.Route{}, nil
 	}
 
@@ -273,6 +326,6 @@ func (u *Updater) GuessRouteForVehicle(vehicle *model.Vehicle) (route model.Rout
 	if err != nil {
 		return route, err
 	}
-	log.Debugf("%v on %s route.", vehicle.VehicleName, route.Name)
+	log.Debugf("%v on %s route.", vehicle.Name, route.Name)
 	return route, err
 }

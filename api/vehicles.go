@@ -26,6 +26,7 @@ func (api *API) VehiclesHandler(w http.ResponseWriter, r *http.Request) {
 
 	// Handle query errors
 	if err != nil {
+		log.WithError(err).Error("Unable to get vehicles.")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -46,15 +47,14 @@ func (api *API) VehiclesCreateHandler(w http.ResponseWriter, r *http.Request) {
 	vehicle.Updated = vehicle.Created
 	vehicleData := json.NewDecoder(r.Body)
 	err := vehicleData.Decode(&vehicle)
-	// Error handling
 	if err != nil {
+		log.WithError(err).Error("Unable to decode vehicle.")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Store new vehicle under vehicles collection
 	err = api.db.CreateVehicle(&vehicle)
-	// Error handling
 	if err != nil {
+		log.WithError(err).Error("Unable to create vehicle.")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
@@ -67,23 +67,27 @@ func (api *API) VehiclesEditHandler(w http.ResponseWriter, r *http.Request) {
 	vehicle := model.Vehicle{}
 	err := json.NewDecoder(r.Body).Decode(&vehicle)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-
-	name := vehicle.VehicleName
-	enabled := vehicle.Enabled
-
-	vehicle, err = api.db.GetVehicle(vehicle.VehicleID)
-	if err != nil {
+		log.WithError(err).Error("Unable to decode vehicle.")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	vehicle.VehicleName = name
+
+	name := vehicle.Name
+	enabled := vehicle.Enabled
+
+	vehicle, err = api.db.GetVehicle(vehicle.ID)
+	if err != nil {
+		log.WithError(err).Error("Unable to get vehicle.")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	vehicle.Name = name
 	vehicle.Enabled = enabled
 	vehicle.Updated = time.Now()
 
 	err = api.db.ModifyVehicle(&vehicle)
 	if err != nil {
+		log.WithError(err).Error("Unable to create vehicle.")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -93,11 +97,13 @@ func (api *API) VehiclesDeleteHandler(w http.ResponseWriter, r *http.Request) {
 	if api.cfg.Authenticate && !cas.IsAuthenticated(r) {
 		return
 	}
-	// Delete vehicle from Vehicles collection
 	vars := mux.Vars(r)
-	log.Debugf("deleting", vars["id"])
-	err := api.db.DeleteVehicle(vars["id"])
-	// Error handling
+	vehicleID, err := strconv.Atoi(vars["id"])
+	if err != nil {
+		log.WithError(err).Error("Unable to parse vehicle ID from string.")
+		return
+	}
+	err = api.db.DeleteVehicle(vehicleID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
@@ -114,10 +120,10 @@ func (api *API) UpdatesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// slice of capacity len(vehicles) and size zero
-	updates := make([]model.VehicleUpdate, 0, len(vehicles))
+	updates := make([]model.Update, 0, len(vehicles))
 	for _, vehicle := range vehicles {
 		since := time.Now().Add(time.Minute * -5)
-		vehicleUpdates, err := api.db.GetUpdatesForVehicleSince(vehicle.VehicleID, since)
+		vehicleUpdates, err := api.db.GetUpdatesForVehicleSince(vehicle.ID, since)
 		if err != nil {
 			log.WithError(err).Error("Unable to get last vehicle update.")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -149,7 +155,7 @@ func (api *API) UpdateMessageHandler(w http.ResponseWriter, r *http.Request) {
 	// Find recent updates and generate message
 	for _, vehicle := range vehicles {
 		// find 10 most recent records
-		update, err := api.db.GetLastUpdateForVehicle(vehicle.VehicleID)
+		update, err := api.db.GetLastUpdateForVehicle(vehicle.ID)
 		if err == nil {
 			// Use first 4 char substring of update.Speed
 			speed := update.Speed
@@ -165,7 +171,7 @@ func (api *API) UpdateMessageHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			lastUpdate := update.Created.In(loc).Format("3:04:05pm")
 
-			message = fmt.Sprintf("<b>%s</b><br/>Traveling %s at<br/> %s mph as of %s", vehicle.VehicleName, CardinalDirection(&update.Heading), speed, lastUpdate)
+			message = fmt.Sprintf("<b>%s</b><br/>Traveling %s at<br/> %s mph as of %s", vehicle.Name, CardinalDirection(&update.Heading), speed, lastUpdate)
 			messages = append(messages, message)
 		}
 	}

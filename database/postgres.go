@@ -1,10 +1,11 @@
 package database
 
 import (
+	"database/sql"
 	"time"
 
 	"github.com/jmoiron/sqlx"
-	_ "github.com/lib/pq" // Postgres package
+	_ "github.com/lib/pq" // Postgres database package
 	"github.com/spf13/viper"
 
 	"github.com/wtg/shuttletracker/model"
@@ -44,8 +45,29 @@ func NewPostgres(cfg PostgresConfig) (*Postgres, error) {
         updated timestamp with time zone NOT NULL DEFAULT current_timestamp
     );
 
-    CREATE TABLE IF NOT EXISTS vehicles (
+    CREATE TABLE IF NOT EXISTS stops (
         id serial PRIMARY KEY,
+        name text,
+        description text,
+        latitude numeric NOT NULL,
+        longitude numeric NOT NULL,
+        enabled boolean NOT NULL,
+        created timestamp with time zone NOT NULL DEFAULT current_timestamp,
+        updated timestamp with time zone NOT NULL DEFAULT current_timestamp
+    );
+
+    --DROP TABLE routes_stops;
+    CREATE TABLE IF NOT EXISTS routes_stops (
+        id serial PRIMARY KEY,
+        route_id integer REFERENCES routes NOT NULL,
+        stop_id integer REFERENCES stops NOT NULL,
+        stop_order integer NOT NULL,
+        UNIQUE (route_id, stop_order)
+    );
+
+    CREATE TABLE IF NOT EXISTS vehicles (
+        id serial PRIMARY KEY,  -- this is our internal ID for each vehicle
+        itrak_id integer UNIQUE,  -- this is the ID that iTrak returns
         name text,
         enabled boolean NOT NULL,
         created timestamp with time zone NOT NULL DEFAULT current_timestamp,
@@ -55,13 +77,12 @@ func NewPostgres(cfg PostgresConfig) (*Postgres, error) {
 
     CREATE TABLE IF NOT EXISTS updates (
         id serial PRIMARY KEY,
-        vehicle_id integer REFERENCES vehicles,
+        vehicle_id integer REFERENCES vehicles NOT NULL,
         latitude numeric NOT NULL,
         longitude numeric NOT NULL,
         heading numeric NOT NULL,
         speed numeric NOT NULL,
         timestamp timestamp with time zone NOT NULL,
-        status text NOT NULL,
         created timestamp with time zone NOT NULL DEFAULT current_timestamp
     );
     CREATE INDEX IF NOT EXISTS updates_created_idx ON updates (created);
@@ -95,8 +116,7 @@ func (pg *Postgres) CreateRoute(route *model.Route) error {
 	if err != nil {
 		return err
 	}
-	err = stmt.Get(route, route)
-	return err
+	return stmt.Get(route, route)
 }
 
 // DeleteRoute deletes a Route by its ID.
@@ -134,13 +154,41 @@ func (pg *Postgres) ModifyRoute(route *model.Route) error {
 	if err != nil {
 		return err
 	}
-	err = stmt.Get(route, route)
-	return err
+	return stmt.Get(route, route)
 }
 
 // CreateStop creates a Stop.
 func (pg *Postgres) CreateStop(stop *model.Stop) error {
-	return nil
+	stmt, err := pg.db.PrepareNamed(`
+        INSERT INTO stops (name, description, enabled)
+        VALUES (:name, :description, :enabled)
+        RETURNING id, created, updated;`)
+	if err != nil {
+		return err
+	}
+	return stmt.Get(stop, stop)
+}
+
+// AddStopToRoute associates a Stop with a Route.
+func (pg *Postgres) AddStopToRoute(stopID string, routeID string) error {
+	tx, err := pg.db.Beginx()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	stmt, err := tx.Prepare(`
+        INSERT INTO routes_stops (route_id, stop_id, stop_order)
+        VALUES ($1, $2, :stop_order)
+        RETURNING id, stop_order;`)
+	if err != nil {
+		return err
+	}
+	_, err = stmt.Exec(routeID, stopID)
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // DeleteStop deletes a Stop by its ID.
@@ -161,25 +209,57 @@ func (pg *Postgres) GetStops() ([]model.Stop, error) {
 }
 
 // CreateUpdate creates an Update.
-func (pg *Postgres) CreateUpdate(update *model.VehicleUpdate) error {
-	return nil
+func (pg *Postgres) CreateUpdate(update *model.Update) error {
+	stmt, err := pg.db.PrepareNamed(`
+        INSERT INTO updates (latitude, longitude, vehicle_id, heading, speed, timestamp)
+        VALUES (:latitude, :longitude, :vehicle_id, :heading, :speed, :timestamp)
+        RETURNING id, created;`)
+	if err != nil {
+		return err
+	}
+	return stmt.Get(update, update)
 }
 
 // DeleteUpdatesBefore deletes all Updates that were created before a time.
-func (pg *Postgres) DeleteUpdatesBefore(before time.Time) (int, error) {
-	return 0, nil
+func (pg *Postgres) DeleteUpdatesBefore(before time.Time) (int64, error) {
+	res, err := pg.db.Exec(`DELETE FROM updates WHERE created < $1;`, before)
+	if err != nil {
+		return 0, err
+	}
+	return res.RowsAffected()
 }
 
 // GetLastUpdateForVehicle returns the latest Update for a vehicle by its ID.
-func (pg *Postgres) GetLastUpdateForVehicle(vehicleID string) (model.VehicleUpdate, error) {
-	var update model.VehicleUpdate
-	return update, nil
+func (pg *Postgres) GetLastUpdateForVehicle(vehicleID int) (model.Update, error) {
+	stmt, err := pg.db.Preparex(`
+        SELECT * FROM updates WHERE vehicle_id = $1
+        ORDER BY created DESC LIMIT 1;`)
+	if err != nil {
+		return model.Update{}, err
+	}
+	var update model.Update
+	err = stmt.Get(&update, vehicleID)
+	if err == sql.ErrNoRows {
+		return update, ErrUpdateNotFound
+	}
+	return update, err
 }
 
 // GetUpdatesForVehicleSince returns all updates since a time for a vehicle by its ID.
-func (pg *Postgres) GetUpdatesForVehicleSince(vehicleID string, since time.Time) ([]model.VehicleUpdate, error) {
-	var updates []model.VehicleUpdate
-	return updates, nil
+func (pg *Postgres) GetUpdatesForVehicleSince(vehicleID int, since time.Time) ([]model.Update, error) {
+	stmt, err := pg.db.Preparex(`
+        SELECT * FROM updates
+        WHERE vehicle_id = $1 and created > $2
+        ORDER BY created DESC;`)
+	if err != nil {
+		return []model.Update{}, err
+	}
+	updates := []model.Update{}
+	err = stmt.Select(&updates, vehicleID, since)
+	if err == sql.ErrNoRows {
+		return updates, ErrUpdateNotFound
+	}
+	return updates, err
 }
 
 // GetUsers returns all Users.
@@ -203,33 +283,75 @@ func (pg *Postgres) GetUsers() ([]model.User, error) {
 
 // CreateVehicle creates a Vehicle.
 func (pg *Postgres) CreateVehicle(vehicle *model.Vehicle) error {
-	return nil
+	stmt, err := pg.db.PrepareNamed(`
+        INSERT INTO vehicles (itrak_id, name, enabled)
+        VALUES (:itrak_id, :name, :enabled)
+        RETURNING id, created, updated;`)
+	if err != nil {
+		return err
+	}
+	return stmt.Get(vehicle, vehicle)
 }
 
 // DeleteVehicle deletes a Vehicle by its ID.
-func (pg *Postgres) DeleteVehicle(vehicleID string) error {
+func (pg *Postgres) DeleteVehicle(vehicleID int) error {
 	return nil
 }
 
 // GetVehicle returns a Vehicle by its ID.
-func (pg *Postgres) GetVehicle(vehicleID string) (model.Vehicle, error) {
+func (pg *Postgres) GetVehicle(vehicleID int) (model.Vehicle, error) {
+	stmt, err := pg.db.Preparex(`SELECT * FROM vehicles WHERE id = $1;`)
+	if err != nil {
+		return model.Vehicle{}, err
+	}
 	var vehicle model.Vehicle
-	return vehicle, nil
+	err = stmt.Get(&vehicle, vehicleID)
+	if err == sql.ErrNoRows {
+		return vehicle, ErrVehicleNotFound
+	}
+	return vehicle, err
+}
+
+// GetVehicleByITrakID returns a Vehicle by its iTrak ID.
+func (pg *Postgres) GetVehicleByITrakID(itrakID int) (model.Vehicle, error) {
+	stmt, err := pg.db.Preparex(`SELECT * FROM vehicles WHERE itrak_id = $1;`)
+	if err != nil {
+		return model.Vehicle{}, err
+	}
+	var vehicle model.Vehicle
+	err = stmt.Get(&vehicle, itrakID)
+	if err == sql.ErrNoRows {
+		return vehicle, ErrVehicleNotFound
+	}
+	return vehicle, err
 }
 
 // GetVehicles returns all Vehicles.
 func (pg *Postgres) GetVehicles() ([]model.Vehicle, error) {
-	var vehicles []model.Vehicle
-	return vehicles, nil
+	vehicles := []model.Vehicle{}
+	query := `SELECT * FROM vehicles;`
+	err := pg.db.Select(&vehicles, query)
+	return vehicles, err
 }
 
 // GetEnabledVehicles returns all Vehicles that are enabled.
 func (pg *Postgres) GetEnabledVehicles() ([]model.Vehicle, error) {
-	var vehicles []model.Vehicle
-	return vehicles, nil
+	vehicles := []model.Vehicle{}
+	query := `SELECT * FROM vehicles WHERE enabled = true;`
+	err := pg.db.Select(&vehicles, query)
+	return vehicles, err
 }
 
 // ModifyVehicle updates a Vehicle by its ID.
 func (pg *Postgres) ModifyVehicle(vehicle *model.Vehicle) error {
-	return nil
+	stmt, err := pg.db.PrepareNamed(`
+        UPDATE vehicles SET (name, itrak_id, enabled)
+        = (:name, :itrak_id, :enabled)
+        WHERE id = :id
+        RETURNING updated;`)
+	if err != nil {
+		return err
+	}
+	err = stmt.Get(vehicle, vehicle)
+	return err
 }

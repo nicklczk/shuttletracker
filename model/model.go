@@ -6,27 +6,27 @@ import (
 )
 
 // VehicleUpdate represents a single position observed for a Vehicle.
-type VehicleUpdate struct {
-	VehicleID string    `json:"vehicleID"   bson:"vehicleID,omitempty"`
-	Lat       string    `json:"lat"         bson:"lat"`
-	Lng       string    `json:"lng"         bson:"lng"`
+type Update struct {
+	ID        int
+	VehicleID int       `json:"vehicleID,string"   bson:"vehicleID,omitempty" db:"vehicle_id"`
+	Latitude  float64   `json:"lat"         bson:"lat"`
+	Longitude float64   `json:"lng"         bson:"lng"`
 	Heading   string    `json:"heading"     bson:"heading"`
 	Speed     string    `json:"speed"       bson:"speed"`
 	Lock      string    `json:"lock"        bson:"lock"`
-	Time      string    `json:"time"        bson:"time"`
-	Date      string    `json:"date"        bson:"date"`
-	Status    string    `json:"status"      bson:"status"`
+	Timestamp time.Time `json:"time"        bson:"time"`
 	Created   time.Time `json:"created"     bson:"created"`
 	Route     string    `json:"RouteID"     bson:"routeID"`
 }
 
 // Vehicle represents an object being tracked.
 type Vehicle struct {
-	VehicleID   string    `json:"vehicleID"   bson:"vehicleID,omitempty"`
-	VehicleName string    `json:"vehicleName" bson:"vehicleName"`
-	Created     time.Time `bson:"created"`
-	Updated     time.Time `bson:"updated"`
-	Enabled     bool      `json:"enabled"     bson:"enabled"`
+	ID      int       `json:"vehicleID,string"`
+	ITrakID int       `json:"itrakID"   bson:"itrakID,omitempty" db:"itrak_id"`
+	Name    string    `json:"vehicleName" bson:"vehicleName"`
+	Created time.Time `bson:"created"`
+	Updated time.Time `bson:"updated"`
+	Enabled bool      `json:"enabled"     bson:"enabled"`
 }
 
 // Status contains a detailed message on the tracked object's status.

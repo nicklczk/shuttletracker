@@ -1,5 +1,6 @@
 package database
 
+/*
 import (
 	"time"
 
@@ -129,7 +130,7 @@ func (m *MongoDB) GetStops() ([]model.Stop, error) {
 }
 
 // CreateUpdate creates an Update.
-func (m *MongoDB) CreateUpdate(update *model.VehicleUpdate) error {
+func (m *MongoDB) CreateUpdate(update *model.Update) error {
 	return m.updates.Insert(&update)
 }
 
@@ -143,15 +144,15 @@ func (m *MongoDB) DeleteUpdatesBefore(before time.Time) (int, error) {
 }
 
 // GetLastUpdateForVehicle returns the latest Update for a vehicle by its ID.
-func (m *MongoDB) GetLastUpdateForVehicle(vehicleID string) (model.VehicleUpdate, error) {
-	var update model.VehicleUpdate
+func (m *MongoDB) GetLastUpdateForVehicle(vehicleID string) (model.Update, error) {
+	var update model.Update
 	err := m.updates.Find(bson.M{"vehicleID": vehicleID}).Sort("-created").One(&update)
 	return update, err
 }
 
 // GetUpdatesForVehicleSince returns all updates since a time for a vehicle by its ID.
-func (m *MongoDB) GetUpdatesForVehicleSince(vehicleID string, since time.Time) ([]model.VehicleUpdate, error) {
-	var updates []model.VehicleUpdate
+func (m *MongoDB) GetUpdatesForVehicleSince(vehicleID string, since time.Time) ([]model.Update, error) {
+	var updates []model.Update
 	err := m.updates.Find(bson.M{"vehicleID": vehicleID, "created": bson.M{"$gt": since}}).Sort("-created").All(&updates)
 	return updates, err
 }
@@ -170,13 +171,13 @@ func (m *MongoDB) CreateVehicle(vehicle *model.Vehicle) error {
 
 // DeleteVehicle deletes a Vehicle by its ID.
 func (m *MongoDB) DeleteVehicle(vehicleID string) error {
-	return m.vehicles.Remove(bson.M{"vehicleID": vehicleID})
+	return m.vehicles.Remove(bson.M{"id": vehicleID})
 }
 
 // GetVehicle returns a Vehicle by its ID.
 func (m *MongoDB) GetVehicle(vehicleID string) (model.Vehicle, error) {
 	var vehicle model.Vehicle
-	err := m.vehicles.Find(bson.M{"vehicleID": vehicleID}).One(&vehicle)
+	err := m.vehicles.Find(bson.M{"id": vehicleID}).One(&vehicle)
 	return vehicle, err
 }
 
@@ -196,5 +197,6 @@ func (m *MongoDB) GetEnabledVehicles() ([]model.Vehicle, error) {
 
 // ModifyVehicle updates a Vehicle by its ID.
 func (m *MongoDB) ModifyVehicle(vehicle *model.Vehicle) error {
-	return m.vehicles.Update(bson.M{"vehicleID": vehicle.VehicleID}, vehicle)
+	return m.vehicles.Update(bson.M{"id": vehicle.ID}, vehicle)
 }
+*/
