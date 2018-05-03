@@ -29,6 +29,12 @@ type Vehicle struct {
 	Enabled     bool      `json:"enabled"     bson:"enabled"`
 }
 
+//	Schedule contains the name of each stop and an array of the arrival times
+type Schedule struct {
+	Name  		string    		`json:"stopName"	bson:"stopName"`
+    Times 		[]time.Time 	`json:"stopTimes"	bson:"stopTimes"`
+}
+
 // Status contains a detailed message on the tracked object's status.
 type Status struct {
 	Public  bool      `bson:"public"`
@@ -58,9 +64,9 @@ type Route struct {
 	ID             string    `json:"id"             bson:"id"`
 	Name           string    `json:"name"           bson:"name"`
 	Description    string    `json:"description"    bson:"description"`
-	StartTime      string    `json:"startTime"      bson:"startTime"`
-	EndTime        string    `json:"endTime"        bson:"endTime"`
-	Enabled        bool      `json:"enabled,bool"	  bson:"enabled"`
+	TimeInterval   []Time    `json:"intervals"			 bson:"intervals"`
+	Enabled        bool      `json:"enabled,bool"	 bson:"enabled"`
+	Active         bool      `json:"active,bool"	 bson:"enabled"`
 	Color          string    `json:"color"          bson:"color"`
 	Width          int       `json:"width,string"   bson:"width"`
 	Coords         []Coord   `json:"coords"         bson:"coords"`
@@ -69,6 +75,15 @@ type Route struct {
 	AvailableRoute int       `json:"availableroute" bson:"availableroute"`
 	Created        time.Time `json:"created"        bson:"created"`
 	Updated        time.Time `json:"updated"        bson:"updated"`
+}
+
+// AdminMessage represents a message popup for the user from the site administrator
+type AdminMessage struct {
+	ID      int       `json:"id" 									bson:"id"`
+	Type    string    `json:type								bson:"type"`
+	Message string    `json:message						bson:"message"`
+	Display bool      `json:display						bson:"display"`
+	Created time.Time `json:created						bson:"created"`
 }
 
 // Stop indicates where a tracked object is scheduled to arrive
