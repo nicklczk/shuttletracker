@@ -17,6 +17,8 @@ type MongoDB struct {
 	routes   *mgo.Collection
 	stops    *mgo.Collection
 	users    *mgo.Collection
+	messages *mgo.Collection
+	schedules *mgo.Collection
 }
 
 // MongoDBConfig contains information on how to connect to a MongoDB server.
@@ -39,6 +41,8 @@ func NewMongoDB(cfg MongoDBConfig) (*MongoDB, error) {
 	db.routes = db.session.DB("").C("routes")
 	db.stops = db.session.DB("").C("stops")
 	db.users = db.session.DB("").C("users")
+	db.messages = db.session.DB("").C("messages")
+	db.schedules = db.session.DB("").C("schedules")
 
 	// Ensure unique vehicle identification
 	vehicleIndex := mgo.Index{
@@ -77,6 +81,7 @@ func NewMongoDBConfig(v *viper.Viper) *MongoDBConfig {
 
 // CreateRoute creates a Route.
 func (m *MongoDB) CreateRoute(route *model.Route) error {
+	route.ID = bson.NewObjectId().Hex()
 	return m.routes.Insert(&route)
 }
 
@@ -89,6 +94,7 @@ func (m *MongoDB) DeleteRoute(routeID string) error {
 func (m *MongoDB) GetRoute(routeID string) (model.Route, error) {
 	var route model.Route
 	err := m.routes.Find(bson.M{"id": routeID}).One(&route)
+	SetRouteActiveStatus(&route,time.Now())
 	return route, err
 }
 
@@ -96,6 +102,9 @@ func (m *MongoDB) GetRoute(routeID string) (model.Route, error) {
 func (m *MongoDB) GetRoutes() ([]model.Route, error) {
 	var routes []model.Route
 	err := m.routes.Find(bson.M{}).All(&routes)
+	for i := range routes {
+		SetRouteActiveStatus(&routes[i],time.Now())
+	}
 	return routes, err
 }
 
@@ -106,6 +115,7 @@ func (m *MongoDB) ModifyRoute(route *model.Route) error {
 
 // CreateStop creates a Stop.
 func (m *MongoDB) CreateStop(stop *model.Stop) error {
+	stop.ID = bson.NewObjectId().Hex()
 	return m.stops.Insert(&stop)
 }
 
@@ -146,6 +156,9 @@ func (m *MongoDB) DeleteUpdatesBefore(before time.Time) (int, error) {
 func (m *MongoDB) GetLastUpdateForVehicle(vehicleID string) (model.VehicleUpdate, error) {
 	var update model.VehicleUpdate
 	err := m.updates.Find(bson.M{"vehicleID": vehicleID}).Sort("-created").One(&update)
+	if err == mgo.ErrNotFound {
+		return update, ErrUpdateNotFound
+	}
 	return update, err
 }
 
@@ -177,6 +190,9 @@ func (m *MongoDB) DeleteVehicle(vehicleID string) error {
 func (m *MongoDB) GetVehicle(vehicleID string) (model.Vehicle, error) {
 	var vehicle model.Vehicle
 	err := m.vehicles.Find(bson.M{"vehicleID": vehicleID}).One(&vehicle)
+	if err == mgo.ErrNotFound {
+		return vehicle, ErrVehicleNotFound
+	}
 	return vehicle, err
 }
 
@@ -197,4 +213,46 @@ func (m *MongoDB) GetEnabledVehicles() ([]model.Vehicle, error) {
 // ModifyVehicle updates a Vehicle by its ID.
 func (m *MongoDB) ModifyVehicle(vehicle *model.Vehicle) error {
 	return m.vehicles.Update(bson.M{"vehicleID": vehicle.VehicleID}, vehicle)
+}
+
+// AddMessage sets the current admin message
+func (m *MongoDB) AddMessage(message *model.AdminMessage) error {
+	message.ID = 1
+	message.Created = time.Now()
+	return m.messages.Insert(message)
+}
+
+// ClearMessage Clears the current message.
+func (m *MongoDB) ClearMessage() error {
+	message := model.AdminMessage{}
+	message.ID = 1
+	return m.messages.Remove(bson.M{"id": 1})
+}
+
+// GetCurrentMessage gets the most recent admin message
+func (m *MongoDB) GetCurrentMessage() (model.AdminMessage, error) {
+	message := model.AdminMessage{}
+	err := m.messages.Find(bson.M{}).Sort("-created").One(&message)
+	return message, err
+}
+
+// GetMessages gets the most recent admin messages
+func (m *MongoDB) GetMessages() ([]model.AdminMessage, error) {
+	messages := []model.AdminMessage{}
+	err := m.messages.Find(bson.M{}).All(&messages)
+	return messages, err
+}
+
+func (m *MongoDB) createSchedule(schedule *model.Schedule) error {
+	return m.schedule.Insert(&stopName)
+}
+
+// GetSchedule returns all schedules.
+func (m *MongoDB) getSchedule(stopName string) ([]model.Schedule, error) {
+	var schedule model.Schedule
+	err := m.schedule.Find(bson.M{"stopName": stopName}).One(&schedule)
+	if err == mgo.ErrNotFound {
+		return schedule
+	}
+	return schedule
 }
