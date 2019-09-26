@@ -2,111 +2,93 @@ package api
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"strconv"
 	"time"
 
-	"gopkg.in/cas.v1"
-
+	"github.com/wtg/shuttletracker"
 	"github.com/wtg/shuttletracker/log"
-	"github.com/wtg/shuttletracker/model"
-
-	"github.com/gorilla/mux"
 )
 
 var (
 	lastUpdate time.Time
 )
 
-// VehiclesHandler finds all the vehicles in the database.
+// VehiclesHandler returns all the vehicles.
 func (api *API) VehiclesHandler(w http.ResponseWriter, r *http.Request) {
-	// Find all vehicles in database
-	vehicles, err := api.db.GetVehicles()
-
-	// Handle query errors
+	vehicles, err := api.ms.Vehicles()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	// Send each vehicle to client as JSON
 	WriteJSON(w, vehicles)
 }
 
-// VehiclesCreateHandler adds a new vehicle to the database.
+// VehiclesCreateHandler adds a new vehicle.
 func (api *API) VehiclesCreateHandler(w http.ResponseWriter, r *http.Request) {
-	if api.cfg.Authenticate && !cas.IsAuthenticated(r) {
-		return
-	}
-
-	// Create new vehicle object using request fields
-	vehicle := model.Vehicle{}
-	vehicle.Created = time.Now()
-	vehicle.Updated = vehicle.Created
+	vehicle := shuttletracker.Vehicle{}
 	vehicleData := json.NewDecoder(r.Body)
 	err := vehicleData.Decode(&vehicle)
-	// Error handling
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	// Store new vehicle under vehicles collection
-	err = api.db.CreateVehicle(&vehicle)
-	// Error handling
+	err = api.ms.CreateVehicle(&vehicle)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }
 
 func (api *API) VehiclesEditHandler(w http.ResponseWriter, r *http.Request) {
-	if api.cfg.Authenticate && !cas.IsAuthenticated(r) {
+	vehicle := &shuttletracker.Vehicle{}
+	err := json.NewDecoder(r.Body).Decode(vehicle)
+	if err != nil {
+		log.WithError(err).Error("unable to decode vehicle")
+		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	vehicle := model.Vehicle{}
-	err := json.NewDecoder(r.Body).Decode(&vehicle)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-	}
-
-	name := vehicle.VehicleName
+	name := vehicle.Name
 	enabled := vehicle.Enabled
-
-	vehicle, err = api.db.GetVehicle(vehicle.VehicleID)
+	trackerID := vehicle.TrackerID
+	vehicle, err = api.ms.Vehicle(vehicle.ID)
 	if err != nil {
+		log.WithError(err).Error("unable to retrieve vehicle")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	vehicle.VehicleName = name
-	vehicle.Enabled = enabled
-	vehicle.Updated = time.Now()
 
-	err = api.db.ModifyVehicle(&vehicle)
+	vehicle.Name = name
+	vehicle.Enabled = enabled
+	vehicle.TrackerID = trackerID
+
+	err = api.ms.ModifyVehicle(vehicle)
 	if err != nil {
+		log.WithError(err).Error("unable to modify vehicle")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 }
 
 func (api *API) VehiclesDeleteHandler(w http.ResponseWriter, r *http.Request) {
-	if api.cfg.Authenticate && !cas.IsAuthenticated(r) {
-		return
-	}
-	// Delete vehicle from Vehicles collection
-	vars := mux.Vars(r)
-	log.Debugf("deleting", vars["id"])
-	err := api.db.DeleteVehicle(vars["id"])
-	// Error handling
+	id, err := strconv.ParseInt(r.URL.Query().Get("id"), 10, 64)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	err = api.ms.DeleteVehicle(id)
+	if err != nil {
+		if err == shuttletracker.ErrVehicleNotFound {
+			http.Error(w, "Vehicle not found", http.StatusNotFound)
+		} else {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
 	}
 }
 
-// Here's my view, keep every name the same meaning, otherwise, choose another.
-// UpdatesHandler get the most recent update for each vehicle in the vehicles collection.
+// UpdatesHandler gets the most recent update for each enabled vehicle.
 func (api *API) UpdatesHandler(w http.ResponseWriter, r *http.Request) {
-	vehicles, err := api.db.GetEnabledVehicles()
+	vehicles, err := api.ms.EnabledVehicles()
 	if err != nil {
 		log.WithError(err).Error("Unable to get enabled vehicles.")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -114,10 +96,10 @@ func (api *API) UpdatesHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// slice of capacity len(vehicles) and size zero
-	updates := make([]model.VehicleUpdate, 0, len(vehicles))
+	updates := make([]*shuttletracker.Location, 0, len(vehicles))
 	for _, vehicle := range vehicles {
 		since := time.Now().Add(time.Minute * -5)
-		vehicleUpdates, err := api.db.GetUpdatesForVehicleSince(vehicle.VehicleID, since)
+		vehicleUpdates, err := api.ms.LocationsSince(vehicle.ID, since)
 		if err != nil {
 			log.WithError(err).Error("Unable to get last vehicle update.")
 			http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -134,68 +116,35 @@ func (api *API) UpdatesHandler(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, updates) // it's good to take some REST in our server :)
 }
 
-// UpdateMessageHandler generates a message about an update for a vehicle
-func (api *API) UpdateMessageHandler(w http.ResponseWriter, r *http.Request) {
-	// For each vehicle/update, store message as a string
-	var messages []string
-	var message string
-
-	// Query all Vehicles
-	vehicles, err := api.db.GetVehicles()
-	// Handle errors
+// HistoryHandler returns the last 30 days worth of updates for all enabled vehicles
+func (api *API) HistoryHandler(w http.ResponseWriter, r *http.Request){
+	vehicles, err := api.ms.EnabledVehicles()
 	if err != nil {
+		log.WithError(err).Error("Unable to get enabled vehicles")
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
-	// Find recent updates and generate message
+
+	history := make([][]*shuttletracker.Location, 0, len(vehicles))
 	for _, vehicle := range vehicles {
-		// find 10 most recent records
-		update, err := api.db.GetLastUpdateForVehicle(vehicle.VehicleID)
-		if err == nil {
-			// Use first 4 char substring of update.Speed
-			speed := update.Speed
-			if len(speed) > 4 {
-				speed = speed[0:4]
-			}
-
-			// Convert last updated time to local timezone
-			loc, err := time.LoadLocation("America/New_York")
-			if err != nil {
-				log.WithError(err).Error("Could not load time zone information.")
-				continue
-			}
-			lastUpdate := update.Created.In(loc).Format("3:04:05pm")
-
-			message = fmt.Sprintf("<b>%s</b><br/>Traveling %s at<br/> %s mph as of %s", vehicle.VehicleName, CardinalDirection(&update.Heading), speed, lastUpdate)
-			messages = append(messages, message)
+		since := time.Now().Add(time.Minute * -43200)
+		vehicleUpdates, err := api.ms.LocationsSince(vehicle.ID, since)
+		if err != nil{
+			log.WithError(err).Error("Unable to get last vehicle update.")
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		if len(vehicleUpdates) > 0 {
+			history = append(history, vehicleUpdates)
 		}
 	}
-	// Convert to JSON
-	WriteJSON(w, messages)
-}
 
-// CardinalDirection returns the cardinal direction of a vehicle's heading.
-func CardinalDirection(h *string) string {
-	heading, err := strconv.ParseFloat(*h, 64)
-	if err != nil {
-		log.WithError(err).Error("Unable to parse float")
-		return "North"
+	writerErr := WriteJSON(w, history)
+	//Errcheck complaining 
+	if writerErr != nil{
+		http.Error(w, writerErr.Error(), http.StatusInternalServerError)
 	}
-	switch {
-	case (heading >= 22.5 && heading < 67.5):
-		return "North-East"
-	case (heading >= 67.5 && heading < 112.5):
-		return "East"
-	case (heading >= 112.5 && heading < 157.5):
-		return "South-East"
-	case (heading >= 157.5 && heading < 202.5):
-		return "South"
-	case (heading >= 202.5 && heading < 247.5):
-		return "South-West"
-	case (heading >= 247.5 && heading < 292.5):
-		return "West"
-	case (heading >= 292.5 && heading < 337.5):
-		return "North-West"
-	default:
-		return "North"
-	}
+	
+
+
 }

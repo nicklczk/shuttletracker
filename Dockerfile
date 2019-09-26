@@ -1,26 +1,32 @@
-FROM alpine:3.6
+FROM node:10 as npmenv
 
-RUN apk add --no-cache \
-    ca-certificates \
-    git \
-    go \
-    musl-dev \
-    tzdata
+# Install npm dependencies and build
+WORKDIR /frontend
+COPY /frontend/package.json /frontend/package-lock.json ./
+RUN npm ci
 
-ENV GOPATH /go
-ENV PATH $GOPATH/bin:/usr/local/go/bin:$PATH
+ADD /frontend /frontend
+# this lets us override where the built assets should expect to be found
+ARG STATIC_PATH
+RUN npm run build
 
-RUN mkdir -p "$GOPATH/src/github.com/wtg/shuttletracker" "$GOPATH/bin" && chmod -R 777 "$GOPATH"
-WORKDIR $GOPATH/src/github.com/wtg/shuttletracker
-RUN go get -u github.com/kardianos/govendor
 
+FROM golang:1.12
+
+RUN groupadd -r shuttletracker && useradd --no-log-init -r -g shuttletracker shuttletracker
+
+RUN mkdir /app
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
+RUN go build ./cmd/shuttletracker
+
+COPY --from=npmenv /static/ /app/static/
 
 # Dokku checks http://dokku.viewdocs.io/dokku/deployment/zero-downtime-deploys/
-RUN mkdir /app
 COPY CHECKS /app
 
-RUN govendor sync
-RUN go build -o shuttletracker
-
-CMD ["./shuttletracker"]
+USER shuttletracker:shuttletracker
+EXPOSE 8080
+CMD ["/app/shuttletracker"]

@@ -6,17 +6,17 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/wtg/shuttletracker/api"
-	"github.com/wtg/shuttletracker/database"
 	"github.com/wtg/shuttletracker/log"
+	"github.com/wtg/shuttletracker/postgres"
 	"github.com/wtg/shuttletracker/updater"
 )
 
 // Config is the global configuration struct.
 type Config struct {
-	Database *database.MongoDBConfig
 	Updater  *updater.Config
 	API      *api.Config
 	Log      *log.Config
+	Postgres *postgres.Config
 }
 
 // New creates a new, global Config. Reads in configuration from config files.
@@ -30,11 +30,14 @@ func New() (*Config, error) {
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 
 	cfg.API = api.NewConfig(v)
-	cfg.Database = database.NewMongoDBConfig(v)
 	cfg.Updater = updater.NewConfig(v)
-	cfg.Log = log.NewConfig()
+	cfg.Log = log.NewConfig(v)
 
-	log.Debugf("All settings: %+v", v.AllSettings())
+	pgCfg, err := postgres.NewConfig(v)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Postgres = pgCfg
 
 	v.SetConfigName("conf")
 	v.AddConfigPath(".")
@@ -45,6 +48,14 @@ func New() (*Config, error) {
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
 	}
+
+	// Special case for setting log level after reading config
+	log.SetLevel(cfg.Log.Level)
+	log.Debugf("All settings: %+v", v.AllSettings())
+	log.Debugf("API configuration: %+v", cfg.API)
+	log.Debugf("Updater configuration: %+v", cfg.Updater)
+	log.Debugf("Log configuration: %+v", cfg.Log)
+	log.Debugf("Postgres configuration: %+v", cfg.Postgres)
 
 	return cfg, nil
 }

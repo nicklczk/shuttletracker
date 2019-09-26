@@ -1,5 +1,5 @@
-bower_components
-conf.json
-*.swp
-/vendor/*/
+/conf.json
 /coverage.txt
+/shuttletracker
+/static/*
+/shuttletracker.exe
